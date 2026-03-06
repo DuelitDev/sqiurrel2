@@ -2,7 +2,7 @@ use std::fmt::Display;
 
 pub const VAR_CHAR_CAPACITY: usize = 32;
 
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
 pub struct VarChar {
     length: u8,
     data: [char; VAR_CHAR_CAPACITY],
@@ -28,6 +28,17 @@ impl Display for VarChar {
         write!(
             f,
             "{}",
+            String::from_iter(self.data.iter().take(self.length as usize))
+        )
+    }
+}
+
+impl std::fmt::Debug for VarChar {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "VarChar {{ length: {}, data: \"{}\" }}",
+            self.length,
             String::from_iter(self.data.iter().take(self.length as usize))
         )
     }
