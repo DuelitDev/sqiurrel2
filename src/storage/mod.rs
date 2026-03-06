@@ -32,6 +32,28 @@ impl DataType {
             DataType::String => "String",
         }
     }
+
+    pub fn try_from_str(value: &str) -> io::Result<Self> {
+        match value {
+            "Int" => Ok(DataType::Int),
+            "Float" => Ok(DataType::Float),
+            "Bool" => Ok(DataType::Bool),
+            "String" => Ok(DataType::String),
+            _ => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Unknown data type: {value}"),
+            )),
+        }
+    }
+
+    pub fn byte_len(self) -> u64 {
+        match self {
+            DataType::Int => std::mem::size_of::<i64>() as u64,
+            DataType::Float => std::mem::size_of::<f64>() as u64,
+            DataType::Bool => std::mem::size_of::<u8>() as u64,
+            DataType::String => (crate::var_char::VAR_CHAR_CAPACITY * std::mem::size_of::<char>()) as u64,
+        }
+    }
 }
 
 impl DataValue {
@@ -147,6 +169,132 @@ pub async fn create_row(table_id: TableId, values: Vec<DataValue>) -> io::Result
     Ok(RowId(id))
 }
 
+pub fn get_table_hash(name: &str) -> TableId {
+    let mut hasher = DefaultHasher::new();
+    name.hash(&mut hasher);
+    TableId(hasher.finish())
+}
+
+async fn read_schema(
+    table_id: TableId,
+) -> io::Result<(u64, String, Vec<(ColumnId, DataType, String)>)> {
+    let mut schema_file = fs::File::open(format!("{}/schema", table_id.0)).await?;
+    let mut buf = String::new();
+    schema_file.read_to_string(&mut buf).await?;
+
+    let error = || io::Error::new(io::ErrorKind::InvalidData, "Schema file is corrupted");
+    let mut lines = buf.lines();
+
+    let last_id_line = lines.next().ok_or_else(error)?;
+    let last_id = last_id_line
+        .strip_prefix("LAST_ID ")
+        .ok_or_else(error)
+        .and_then(|value| u64::from_str_radix(value, 16).map_err(|_| error()))?;
+
+    let table_name = lines
+        .next()
+        .ok_or_else(error)?
+        .strip_prefix("NAME ")
+        .ok_or_else(error)?
+        .to_string();
+
+    let mut columns = Vec::new();
+    for line in lines {
+        let mut parts = line.splitn(4, ' ');
+
+        let keyword = parts.next().ok_or_else(error)?;
+        if keyword != "COLUMN" {
+            return Err(error());
+        }
+
+        let column_id = parts
+            .next()
+            .ok_or_else(error)
+            .and_then(|value| value.parse::<u64>().map_err(|_| error()))?;
+
+        let column_type = parts
+            .next()
+            .ok_or_else(error)
+            .and_then(DataType::try_from_str)?;
+
+        let column_name = parts.next().ok_or_else(error)?.to_string();
+
+        columns.push((ColumnId(column_id), column_type, column_name));
+    }
+
+    Ok((last_id, table_name, columns))
+}
+
+async fn read_data(fd: &mut fs::File, data_type: DataType) -> io::Result<DataValue> {
+    match data_type {
+        DataType::Int => {
+            let mut buf = [0u8; 8];
+            fd.read_exact(&mut buf).await?;
+            Ok(DataValue::Int(i64::from_be_bytes(buf)))
+        }
+        DataType::Float => {
+            let mut buf = [0u8; 8];
+            fd.read_exact(&mut buf).await?;
+            Ok(DataValue::Float(f64::from_be_bytes(buf)))
+        }
+        DataType::Bool => {
+            let mut buf = [0u8; 1];
+            fd.read_exact(&mut buf).await?;
+            Ok(DataValue::Bool(buf[0] != 0))
+        }
+        DataType::String => {
+            let mut buf = [0u8; crate::var_char::VAR_CHAR_CAPACITY * std::mem::size_of::<char>()];
+            fd.read_exact(&mut buf).await?;
+
+            let chars: [char; crate::var_char::VAR_CHAR_CAPACITY] = unsafe { std::mem::transmute(buf) };
+            let len = chars
+                .iter()
+                .position(|ch| *ch == char::default())
+                .unwrap_or(crate::var_char::VAR_CHAR_CAPACITY);
+
+            let s = String::from_iter(chars[..len].iter());
+            let vchar = VarChar::try_from(s.as_str()).map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidData, "Stored string is too long")
+            })?;
+
+            Ok(DataValue::VChar(vchar))
+        }
+    }
+}
+
+pub async fn read_row(table_id: TableId, row_id: RowId) -> io::Result<Vec<DataValue>> {
+    if row_id.0 == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "RowId must start from 1",
+        ));
+    }
+
+    let (last_id, _table_name, columns) = read_schema(table_id).await?;
+    if row_id.0 > last_id {
+        return Err(io::Error::new(io::ErrorKind::NotFound, "Row not found"));
+    }
+
+    let row_size = columns
+        .iter()
+        .map(|(_, data_type, _)| data_type.byte_len())
+        .sum::<u64>();
+
+    let file_num = row_id.0 / ROWS_PER_FILE;
+    let row_index_in_file = (row_id.0 - 1) % ROWS_PER_FILE;
+    let offset = row_index_in_file * row_size;
+
+    let mut data_file = fs::File::open(format!("{}/{}", table_id.0, file_num)).await?;
+    data_file.seek(SeekFrom::Start(offset)).await?;
+
+    let mut row = Vec::with_capacity(columns.len());
+    for (_, data_type, _) in columns {
+        row.push(read_data(&mut data_file, data_type).await?);
+    }
+
+    Ok(row)
+}
+
 mod test {
     use super::*;
     #[tokio::test]
@@ -169,5 +317,15 @@ mod test {
         )
         .await
         .unwrap();
+
+        let table_id = get_table_hash("users");
+        let (last_id, table_name, columns) = read_schema(table_id).await.unwrap();
+        println!("Table Name: {}", table_name);
+        println!("Last ID: {}", last_id);
+        for (col_id, col_type, col_name) in columns {
+            println!("Column ID: {}, Type: {}, Name: {}", col_id.0, col_type.as_str(), col_name);
+        }
+        let row = read_row(table_id, RowId(1)).await.unwrap();
+        println!("Row 1: {:?}", row);
     }
 }
