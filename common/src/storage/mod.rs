@@ -138,7 +138,38 @@ impl Storage {
         name: &str,
         data_type: DataType,
     ) -> Result<ColumnId> {
-        todo!("create_column")
+        let meta = match self.tables.get(&table) {
+            Some(m) if m.alive => m,
+            _ => return Err(StorageErr::TableNotFound(table)),
+        };
+        if meta.columns.iter().any(|c| c.alive && &*c.name == name) {
+            return Err(StorageErr::InvalidSchema("column name already exists"));
+        }
+
+        let column_id = ColumnId(self.header.next_col_id);
+        self.header.next_col_id += 1;
+        let seq_no = self.header.next_seq_no;
+        self.header.next_seq_no += 1;
+
+        let record = Record::ColumnCreate {
+            table_id: table,
+            column_id,
+            name: name.into(),
+            data_type,
+        };
+        write_rec(&mut self.file, &record, seq_no)?;
+        self.header.flush_to(&mut self.file)?;
+        self.file.seek(SeekFrom::End(0))?;
+
+        let meta = self.tables.get_mut(&table).unwrap();
+        meta.columns.push(ColumnMeta {
+            id: column_id,
+            name: name.into(),
+            data_type,
+            alive: true,
+        });
+
+        Ok(column_id)
     }
 
     pub fn alter_column(
@@ -152,7 +183,33 @@ impl Storage {
     }
 
     pub fn drop_column(&mut self, table: TableId, column: ColumnId) -> Result<()> {
-        todo!("drop_column")
+        let meta = match self.tables.get(&table) {
+            Some(m) if m.alive => m,
+            _ => return Err(StorageErr::TableNotFound(table)),
+        };
+        if !meta.columns.iter().any(|c| c.id == column && c.alive) {
+            return Err(StorageErr::InvalidSchema("column not found"));
+        }
+
+        let seq_no = self.header.next_seq_no;
+        self.header.next_seq_no += 1;
+
+        let record = Record::ColumnDrop { table_id: table, column_id: column };
+        write_rec(&mut self.file, &record, seq_no)?;
+        self.header.flush_to(&mut self.file)?;
+        self.file.seek(SeekFrom::End(0))?;
+
+        let col = self
+            .tables
+            .get_mut(&table)
+            .unwrap()
+            .columns
+            .iter_mut()
+            .find(|c| c.id == column)
+            .unwrap();
+        col.alive = false;
+
+        Ok(())
     }
 
     pub fn resolve_columns(&self, table: TableId) -> Result<&[ColumnMeta]> {
@@ -175,7 +232,38 @@ impl Storage {
         table: TableId,
         values: Vec<DataValue>,
     ) -> Result<RowId> {
-        todo!("insert_row")
+        let meta = match self.tables.get(&table) {
+            Some(m) if m.alive => m,
+            _ => return Err(StorageErr::TableNotFound(table)),
+        };
+        let live_cols: Vec<_> = meta.columns.iter().filter(|c| c.alive).collect();
+        if values.len() != live_cols.len() {
+            return Err(StorageErr::InvalidSchema("value count mismatch"));
+        }
+        let pairs: Vec<(ColumnId, DataValue)> =
+            live_cols.iter().map(|c| c.id).zip(values).collect();
+
+        let row_id = RowId(self.header.next_row_id);
+        self.header.next_row_id += 1;
+        let seq_no = self.header.next_seq_no;
+        self.header.next_seq_no += 1;
+
+        let record =
+            Record::RowInsert { table_id: table, row_id, values: pairs.clone() };
+        write_rec(&mut self.file, &record, seq_no)?;
+        self.header.flush_to(&mut self.file)?;
+        self.file.seek(SeekFrom::End(0))?;
+
+        let meta = self.tables.get_mut(&table).unwrap();
+        meta.rows.insert(
+            row_id,
+            crate::storage::meta::RowState {
+                alive: true,
+                values: pairs.into_iter().collect(),
+            },
+        );
+
+        Ok(row_id)
     }
 
     pub fn update_row(
@@ -188,7 +276,25 @@ impl Storage {
     }
 
     pub fn delete_row(&mut self, table: TableId, row: RowId) -> Result<()> {
-        todo!("delete_row")
+        let exists = match self.tables.get(&table) {
+            Some(m) if m.alive => m.rows.get(&row).map(|r| r.alive).unwrap_or(false),
+            _ => return Err(StorageErr::TableNotFound(table)),
+        };
+        if !exists {
+            return Err(StorageErr::InvalidSchema("row not found"));
+        }
+
+        let seq_no = self.header.next_seq_no;
+        self.header.next_seq_no += 1;
+
+        let record = Record::RowDelete { table_id: table, row_id: row };
+        write_rec(&mut self.file, &record, seq_no)?;
+        self.header.flush_to(&mut self.file)?;
+        self.file.seek(SeekFrom::End(0))?;
+
+        self.tables.get_mut(&table).unwrap().rows.get_mut(&row).unwrap().alive = false;
+
+        Ok(())
     }
 
     pub fn iter_rows(
@@ -252,6 +358,68 @@ impl Storage {
                     meta.name.clone()
                 };
                 self.table_names.remove(&*name);
+            }
+            Record::ColumnCreate { table_id, column_id, name, data_type } => {
+                let meta = self.tables.get_mut(&table_id).ok_or_else(|| {
+                    StorageErr::Corrupted(format!(
+                        "column_create unknown table: {}",
+                        table_id.0
+                    ))
+                })?;
+                meta.columns.push(ColumnMeta {
+                    id: column_id,
+                    name,
+                    data_type,
+                    alive: true,
+                });
+            }
+            Record::ColumnDrop { table_id, column_id } => {
+                let meta = self.tables.get_mut(&table_id).ok_or_else(|| {
+                    StorageErr::Corrupted(format!(
+                        "column_drop unknown table: {}",
+                        table_id.0
+                    ))
+                })?;
+                let col =
+                    meta.columns.iter_mut().find(|c| c.id == column_id).ok_or_else(
+                        || {
+                            StorageErr::Corrupted(format!(
+                                "column_drop unknown column: {}",
+                                column_id.0
+                            ))
+                        },
+                    )?;
+                col.alive = false;
+            }
+            Record::RowInsert { table_id, row_id, values } => {
+                let meta = self.tables.get_mut(&table_id).ok_or_else(|| {
+                    StorageErr::Corrupted(format!(
+                        "row_insert unknown table: {}",
+                        table_id.0
+                    ))
+                })?;
+                meta.rows.insert(
+                    row_id,
+                    crate::storage::meta::RowState {
+                        alive: true,
+                        values: values.into_iter().collect(),
+                    },
+                );
+            }
+            Record::RowDelete { table_id, row_id } => {
+                let meta = self.tables.get_mut(&table_id).ok_or_else(|| {
+                    StorageErr::Corrupted(format!(
+                        "row_delete unknown table: {}",
+                        table_id.0
+                    ))
+                })?;
+                let row = meta.rows.get_mut(&row_id).ok_or_else(|| {
+                    StorageErr::Corrupted(format!(
+                        "row_delete unknown row: {}",
+                        row_id.0
+                    ))
+                })?;
+                row.alive = false;
             }
         }
         Ok(())

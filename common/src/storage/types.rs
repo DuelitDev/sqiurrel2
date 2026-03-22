@@ -20,6 +20,15 @@ pub enum DataType {
 }
 
 impl DataType {
+    pub fn default(&self) -> DataValue {
+        match self {
+            Self::Int => DataValue::Int(0),
+            Self::Real => DataValue::Real(0.0),
+            Self::Bool => DataValue::Bool(false),
+            Self::Text => DataValue::Text(Box::from("")),
+        }
+    }
+
     pub fn read_from(r: &mut impl Read) -> Result<Self> {
         match read_u8(r)? {
             1 => Ok(Self::Int),
@@ -49,6 +58,15 @@ pub enum DataValue {
 }
 
 impl DataValue {
+    pub fn data_type(&self) -> DataType {
+        match self {
+            Self::Int(_) => DataType::Int,
+            Self::Real(_) => DataType::Real,
+            Self::Bool(_) => DataType::Bool,
+            Self::Text(_) => DataType::Text,
+        }
+    }
+
     pub fn read_from(r: &mut impl Read) -> Result<Self> {
         let tag = read_u8(r)?;
         match tag {

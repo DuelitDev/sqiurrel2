@@ -1,6 +1,6 @@
-use super::codec::{encode_str, read_str, read_u64};
+use super::codec::{encode_str, read_str, read_u8, read_u32, read_u64};
 use super::error::{Result, StorageErr};
-use super::types::TableId;
+use super::types::{ColumnId, DataType, DataValue, RowId, TableId};
 use std::io::{Read, Write};
 
 pub const RECORD_HEADER_LEN: u32 = 24;
@@ -36,8 +36,32 @@ impl RecordKind {
 
 #[derive(Debug)]
 pub enum Record {
-    TableCreate { table_id: TableId, name: Box<str> },
-    TableDrop { table_id: TableId },
+    TableCreate {
+        table_id: TableId,
+        name: Box<str>,
+    },
+    TableDrop {
+        table_id: TableId,
+    },
+    ColumnCreate {
+        table_id: TableId,
+        column_id: ColumnId,
+        name: Box<str>,
+        data_type: DataType,
+    },
+    ColumnDrop {
+        table_id: TableId,
+        column_id: ColumnId,
+    },
+    RowInsert {
+        table_id: TableId,
+        row_id: RowId,
+        values: Vec<(ColumnId, DataValue)>,
+    },
+    RowDelete {
+        table_id: TableId,
+        row_id: RowId,
+    },
 }
 
 impl Record {
@@ -45,6 +69,10 @@ impl Record {
         match self {
             Self::TableCreate { .. } => RecordKind::TableCreate,
             Self::TableDrop { .. } => RecordKind::TableDrop,
+            Self::ColumnCreate { .. } => RecordKind::ColumnCreate,
+            Self::ColumnDrop { .. } => RecordKind::ColumnDrop,
+            Self::RowInsert { .. } => RecordKind::RowInsert,
+            Self::RowDelete { .. } => RecordKind::RowDelete,
         }
     }
 
@@ -57,6 +85,29 @@ impl Record {
             }
             Self::TableDrop { table_id } => {
                 buf.extend_from_slice(&table_id.0.to_le_bytes());
+            }
+            Self::ColumnCreate { table_id, column_id, name, data_type } => {
+                buf.extend_from_slice(&table_id.0.to_le_bytes());
+                buf.extend_from_slice(&column_id.0.to_le_bytes());
+                buf.push(data_type.encode());
+                encode_str(&mut buf, name);
+            }
+            Self::ColumnDrop { table_id, column_id } => {
+                buf.extend_from_slice(&table_id.0.to_le_bytes());
+                buf.extend_from_slice(&column_id.0.to_le_bytes());
+            }
+            Self::RowInsert { table_id, row_id, values } => {
+                buf.extend_from_slice(&table_id.0.to_le_bytes());
+                buf.extend_from_slice(&row_id.0.to_le_bytes());
+                buf.extend_from_slice(&(values.len() as u32).to_le_bytes());
+                for (col_id, val) in values {
+                    buf.extend_from_slice(&col_id.0.to_le_bytes());
+                    val.encode(&mut buf);
+                }
+            }
+            Self::RowDelete { table_id, row_id } => {
+                buf.extend_from_slice(&table_id.0.to_le_bytes());
+                buf.extend_from_slice(&row_id.0.to_le_bytes());
             }
         }
         buf
@@ -128,6 +179,37 @@ fn parse_rec(kind: RecordKind, r: &mut &[u8]) -> Result<Option<Record>> {
             let table_id = TableId(read_u64(r)?);
             Ok(Some(Record::TableDrop { table_id }))
         }
-        _ => Err(StorageErr::Corrupted(format!("unsupported record kind: {kind:?}"))),
+        RecordKind::ColumnCreate => {
+            let table_id = TableId(read_u64(r)?);
+            let column_id = ColumnId(read_u64(r)?);
+            let data_type = DataType::read_from(r)?;
+            let name = read_str(r)?;
+            Ok(Some(Record::ColumnCreate { table_id, column_id, name, data_type }))
+        }
+        RecordKind::ColumnDrop => {
+            let table_id = TableId(read_u64(r)?);
+            let column_id = ColumnId(read_u64(r)?);
+            Ok(Some(Record::ColumnDrop { table_id, column_id }))
+        }
+        RecordKind::RowInsert => {
+            let table_id = TableId(read_u64(r)?);
+            let row_id = RowId(read_u64(r)?);
+            let count = read_u32(r)? as usize;
+            let mut values = Vec::with_capacity(count);
+            for _ in 0..count {
+                let col_id = ColumnId(read_u64(r)?);
+                let val = DataValue::read_from(r)?;
+                values.push((col_id, val));
+            }
+            Ok(Some(Record::RowInsert { table_id, row_id, values }))
+        }
+        RecordKind::RowDelete => {
+            let table_id = TableId(read_u64(r)?);
+            let row_id = RowId(read_u64(r)?);
+            Ok(Some(Record::RowDelete { table_id, row_id }))
+        }
+        kind => {
+            Err(StorageErr::Corrupted(format!("unsupported record kind: {kind:?}")))
+        }
     }
 }
