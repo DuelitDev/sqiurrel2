@@ -1,6 +1,4 @@
-# SQiurrel v2
-
-## SQiurrel Storage Format v2
+# SQiurrel Storage Format v2
 
 파일은 다음 순서로 구성된다.
 
@@ -11,9 +9,9 @@
 
 DB의 현재 상태는 파일 앞부분에 직접 저장하지 않는다.
 대신 테이블, 컬럼, 로우에 대한 연산을 레코드로 계속 추가한다.
-파일을 열 때는 처음부터 끝까지 읽으면서 현재 상태를 재구성한다.
+파일을 열 때는 처음부터 끝까지 읽으면서 현재 상태를 재구성(replay)한다.
 
-### 엔디안과 기본 규칙
+## 엔디안과 기본 규칙
 
 - 모든 정수와 실수는 little-endian
 - 문자열은 UTF-8
@@ -21,45 +19,42 @@ DB의 현재 상태는 파일 앞부분에 직접 저장하지 않는다.
 - Rust enum 메모리 배치를 그대로 쓰지 않는다
 - 모든 타입은 명시적인 태그 값으로 직렬화한다
 
-### File Header
+## File Header
 
 File Header의 크기는 64 bytes로 고정한다.
 
 | Offset | Size | Type  | Name          | Description                  |
 |-------:|-----:|:------|:--------------|:-----------------------------|
-|      0 |    8 | bytes | magic         | "SQRLDB02"                   |
-|      8 |    2 | u16   | version       | Always 2                     |
-|     10 |    2 | u16   | header_len    | Always 64                    |
-|     12 |    4 | u32   | flags         | 0 on init                    |
-|     16 |    8 | u64   | next_table_id | next TableId                 |
-|     24 |    8 | u64   | next_col_id   | next ColId                   |
-|     32 |    8 | u64   | next_row_id   | next RowId                   |
-|     40 |    8 | u64   | next_seq_no   | next SeqNo                   |
-|     48 |   16 | bytes | reserved      | Always 0                     |
+|      0 |    4 | bytes | magic         | "SQRL"                       |
+|      4 |    1 | u8    | version       | Always 2                     |
+|      5 |    1 | u8    | header_len    | Always 64                    |
+|      6 |    2 | u16   | flags         | 0 on init                    |
+|      8 |   56 | bytes | reserved      | Always 0                     |
 
-초기 파일 생성 시 기본값은 다음과 같다.
+replay 완료 후 다음 ID들을 계산한다:
 
-- next_table_id = 1
-- next_col_id = 1
-- next_row_id = 1
-- next_seq_no = 1
+- next_table_id: replay 중 발견한 table_id의 최댓값 + 1
+- next_col_id: replay 중 발견한 col_id의 최댓값 + 1
+- next_row_id: replay 중 발견한 row_id의 최댓값 + 1
+- next_seq_no: replay 중 발견한 seq_no의 최댓값 + 1
+- 레코드가 하나도 없으면 모두 1로 초기화한다.
 
 ## Record Header
 
-각 레코드는 24 bytes의 Record Header와 payload로 구성된다.
+각 레코드는 16 bytes의 Record Header와 payload로 구성된다.
 
 | Offset | Size | Type | Name      | Description                       |
 |-------:|-----:|:-----|:----------|:----------------------------------|
 |      0 |    4 | u32  | total_len | length including header & payload |
-|      4 |    2 | u16  | rec_type  | record type                       |
-|      6 |    2 | u16  | flags     | 0 on init                         |
-|      8 |    8 | u64  | seq_no    | issued from next_seq_no           |
-|     16 |    4 | u32  | crc32     | checksum for payload              |
-|     20 |    4 | u32  | reserved  | Always 0                          |
+|      4 |    4 | u32  | crc32     | checksum for payload              |
+|      8 |    4 | u32  | seq_no    | issued from next_seq_no           |
+|     12 |    1 | u8   | rec_type  | record type                       |
+|     13 |    1 | u8   | flags     | 0 on init                         |
+|     14 |    2 | u16  | reserved  | Always 0                          |
 
 규칙:
 
-- total_len은 최소 24 이상이어야 한다
+- total_len은 최소 16 이상이어야 한다
 - crc32는 payload에 대해서만 계산한다
 - seq_no는 1씩 증가해야 한다
 - 알 수 없는 rec_type은 오류로 처리한다
@@ -79,19 +74,11 @@ File Header의 크기는 64 bytes로 고정한다.
 
 ## 기본 타입 직렬화
 
-### 문자열
-
-문자열은 다음 형식으로 저장한다.
-
-1. len: u32
-2. bytes: len 길이의 UTF-8 바이트
-
-빈 문자열은 len = 0으로 저장한다.
-
 ### DataType 태그
 
 | Value | DataType |
 |------:|:---------|
+|     0 | Nil      |
 |     1 | Int      |
 |     2 | Real     |
 |     3 | Bool     |
@@ -108,10 +95,20 @@ DataValue는 다음 형식으로 저장한다.
 
 | Tag | Variant | Payload     |
 |----:|:--------|:------------|
+|   0 | Nil     | void        |
 |   1 | Int     | i64         |
 |   2 | Real    | f64         |
 |   3 | Bool    | u8 (0 or 1) |
 |   4 | Text    | string      |
+
+### 문자열
+
+문자열은 다음 형식으로 저장한다.
+
+1. len: u32
+2. bytes: len 길이의 UTF-8 바이트
+
+빈 문자열은 len = 0으로 저장한다.
 
 ## Payload 포맷
 
@@ -264,7 +261,7 @@ patch 형식:
 - magic 불일치
 - version 불일치
 - header_len 불일치
-- total_len이 24보다 작음
+- total_len이 16보다 작음
 - 레코드 길이가 파일 범위를 벗어남
 - crc32 불일치
 - 존재하지 않는 table_id를 참조하는 레코드
@@ -307,7 +304,7 @@ patch 형식:
 
 ## API와 포맷 대응
 
-| Storage 메서드 | Record Kind  |
+| Storage Method | Record Kind  |
 |:---------------|:-------------|
 | create_table   | TableCreate  |
 | drop_table     | TableDrop    |
