@@ -105,6 +105,10 @@ impl Encoder {
         self.buf
     }
 
+    pub fn as_slice(&self) -> &[u8] {
+        self.buf.as_slice()
+    }
+
     pub fn u8(&mut self, v: u8) {
         self.buf.push(v);
     }
@@ -151,7 +155,7 @@ impl Encoder {
 
     pub fn value(&mut self, val: &DataValue) {
         match val {
-            DataValue::Nil => {},
+            DataValue::Nil => (),
             DataValue::Int(i) => self.i64(*i),
             DataValue::Real(r) => self.f64(*r),
             DataValue::Bool(b) => self.bool(*b),
