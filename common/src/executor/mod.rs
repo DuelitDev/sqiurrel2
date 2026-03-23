@@ -93,7 +93,8 @@ impl Executor {
         rows: Vec<Vec<Expr>>,
     ) -> Result<QueryResult> {
         let table = self.storage.resolve_table(table_name)?;
-        let targets = if columns.is_empty() {
+        let table_id = table.id;
+        let targets: Vec<_> = if columns.is_empty() {
             table.columns.iter().map(|c| c.id).collect()
         } else {
             todo!("column name resolution not implemented yet")
@@ -111,7 +112,7 @@ impl Executor {
                 .map(|v| self.eval(&v))
                 .collect::<Result<Vec<_>>>()?;
             // TODO: column order & type checking
-            self.storage.insert_row(table.id, values)?;
+            self.storage.insert_row(table_id, values)?;
             count += 1;
         }
         Ok(QueryResult::Count(count))

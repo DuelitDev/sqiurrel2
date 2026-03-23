@@ -1,4 +1,5 @@
-use super::types::{ColumnId, DataType, DataValue, RowId, TableId};
+use super::{ColumnId, RowId, TableId};
+use crate::schema::{DataType, DataValue};
 use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
