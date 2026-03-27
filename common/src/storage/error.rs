@@ -25,4 +25,7 @@ pub enum StorageErr {
 
     #[error("invalid row: {0}")]
     InvalidRow(&'static str),
+
+    #[error("invalid record tag: {0}")]
+    InvalidRecordTag(u8),
 }

@@ -57,7 +57,7 @@ replay 완료 후 다음 ID들을 계산한다:
 - total_len은 최소 16 이상이어야 한다
 - crc32는 payload에 대해서만 계산한다
 - seq_no는 1씩 증가해야 한다
-- 알 수 없는 rec_type은 오류로 처리한다
+- 알 수 없는 rec_type은 Corruption으로 처리한다
 
 ## Record Kind
 
@@ -99,7 +99,7 @@ DataValue는 다음 형식으로 저장한다.
 |   2 | Int     | i64         |
 |   3 | Real    | f64         |
 |   4 | Bool    | u8 (0 or 1) |
-|   4 | Text    | string      |
+|   5 | Text    | string      |
 
 ### 문자열
 
@@ -151,22 +151,12 @@ DataValue는 다음 형식으로 저장한다.
 
 ### ColumnAlter
 
-| Order | Type     | Name          |
-|------:|:---------|:--------------|
-|     1 | u64      | table_id      |
-|     2 | u64      | col_id        |
-|     4 | u8       | new_col_type  |
-|     3 | string   | new_col_name  |
-
-change_mask 비트 정의:
-
-- bit 0: 이름 변경 포함
-- bit 1: 타입 변경 포함
-
-v1 정책:
-
-- 이름 변경은 지원
-- 타입 변경은 포맷에는 포함하지만 실제 구현은 막아도 된다
+| Order | Type   | Name          |
+|------:|:-------|:--------------|
+|     1 | u64    | table_id      |
+|     2 | u64    | col_id        |
+|     3 | u8     | new_col_type  |
+|     4 | string | new_col_name  |
 
 ### ColumnDrop
 
@@ -263,51 +253,6 @@ patch 형식:
 - 존재하지 않는 column_id를 참조하는 레코드
 - 활성 컬럼 수와 RowInsert의 value_count 불일치
 - 컬럼 타입과 DataValue 타입 불일치
-
-권장 정책:
-
+- seq_no의 gap은 engine이 strict 모드일 때만 corruption 처리한다
 - 마지막 레코드만 깨졌다면 tail corruption으로 보고 마지막 레코드만 무시할 수 있다
 - 중간 레코드가 깨졌다면 전체 파일 손상으로 처리한다
-
-## v1 제약
-
-- Null 미지원
-- RowId는 전역 증가
-- ColumnAlter의 타입 변경은 실구현에서 막아도 됨
-- delete와 drop은 전부 논리 삭제
-- compaction은 v1 범위 밖
-
-## 구현 순서
-
-추천 구현 순서는 다음과 같다.
-
-1. File Header read/write
-2. Record Header read/write
-3. string encode/decode
-4. DataType encode/decode
-5. DataValue encode/decode
-6. replay 로직
-7. create_table
-8. create_column
-9. columns
-10. insert_row
-11. rows
-12. update_row
-13. delete_row
-14. drop_column
-15. drop_table
-
-## API와 포맷 대응
-
-| Storage Method | Record Kind  |
-|:---------------|:-------------|
-| create_table   | TableCreate  |
-| drop_table     | TableDrop    |
-| create_column  | ColumnCreate |
-| alter_column   | ColumnAlter  |
-| drop_column    | ColumnDrop   |
-| insert_row     | RowInsert    |
-| update_row     | RowUpdate    |
-| delete_row     | RowDelete    |
-
-columns와 rows는 레코드를 추가하지 않고 replay된 현재 상태를 조회한다.

@@ -3,7 +3,6 @@ mod header;
 mod record;
 
 pub mod error;
-pub mod meta;
 
 use error::Result;
 pub use error::StorageErr;
@@ -20,10 +19,14 @@ use crate::schema::{DataType, DataValue};
 pub struct TableId(pub u64);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct ColumnId(pub u64);
+pub struct ColId(pub u64);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct RowId(pub u64);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SeqNo(pub u32);
+
 
 #[derive(Debug)]
 pub struct Storage {
