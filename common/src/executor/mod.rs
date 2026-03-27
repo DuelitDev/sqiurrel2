@@ -2,6 +2,7 @@ use crate::query::{Expr, QueryErr, Stmt};
 use crate::schema::{DataType, DataValue};
 use crate::storage::{Storage, StorageErr};
 
+#[derive(serde::Serialize)]
 pub enum QueryResult {
     Rows { columns: Vec<String>, rows: Vec<Vec<String>> },
     Count(usize),
@@ -95,7 +96,7 @@ impl Executor {
         let table = self.storage.resolve_table(table_name)?;
         let table_id = table.id;
         let targets: Vec<_> = if columns.is_empty() {
-            table.columns.iter().map(|c| c.id).collect()
+            table.live_cols().map(|c| c.id).collect()
         } else {
             todo!("column name resolution not implemented yet")
         };
@@ -126,8 +127,8 @@ impl Executor {
         if if_exists && !self.storage.table_exists(table_name) {
             return Ok(QueryResult::Success);
         }
-        let table = self.storage.resolve_table(table_name)?;
-        self.storage.drop_table(table.id)?;
+        let table_id = self.storage.resolve_table(table_name)?.id;
+        self.storage.drop_table(table_id)?;
         Ok(QueryResult::Success)
     }
 }

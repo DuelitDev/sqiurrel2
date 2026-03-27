@@ -1,4 +1,4 @@
 pub mod executor;
-mod query;
+pub mod query;
 mod schema;
 pub mod storage;

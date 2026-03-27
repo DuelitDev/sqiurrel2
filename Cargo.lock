@@ -471,6 +471,7 @@ name = "common"
 version = "0.0.1"
 dependencies = [
  "crc32fast",
+ "serde",
  "tempfile",
  "thiserror 2.0.18",
 ]

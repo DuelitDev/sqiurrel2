@@ -1,5 +1,6 @@
 use common::executor::Executor;
 use common::storage::Storage;
+use common::query::{Lexer, Parser};
 use std::sync::Mutex;
 use tauri::{Manager, State};
 
@@ -9,8 +10,17 @@ type DbState = Mutex<Executor>;
 fn run_query(
     state: State<DbState>,
     src: String,
-) -> Vec<common::executor::result::QueryResult> {
-    state.lock().unwrap().run(&src)
+) -> Result<Vec<common::executor::QueryResult>, String> {
+    let lexer = Lexer::new(src.as_str());
+    let mut parser = Parser::new(lexer).map_err(|e| e.to_string())?;
+    let stmts = parser.parse().map_err(|e| e.to_string())?;
+    let mut exec = state.lock().unwrap();
+    let mut results = Vec::with_capacity(stmts.len());
+    for stmt in stmts {
+        let result = exec.run(stmt).map_err(|e| e.to_string())?;
+        results.push(result);
+    }
+    Ok(results)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

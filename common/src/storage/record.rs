@@ -23,7 +23,7 @@ fn write_rec(w: &mut impl Write, rec: &impl Recordable, seq_no: SeqNo) {
     w.write_all(&payload).unwrap();
 }
 
-fn read_rec(r: &mut impl Read) -> Result<Record> {
+pub(super) fn read_rec(r: &mut impl Read) -> Result<Record> {
     let mut dec = Decoder::new(r);
     let len = dec.u32()?;
     if len < 16 {
@@ -66,6 +66,21 @@ pub enum Record {
     RowInsert(RowInsert),
     RowUpdate(RowUpdate),
     RowDelete(RowDelete),
+}
+
+impl Record {
+    pub(super) fn write_to(&self, w: &mut impl Write, seq_no: SeqNo) {
+        match self {
+            Self::TableCreate(r) => write_rec(w, r, seq_no),
+            Self::TableDrop(r) => write_rec(w, r, seq_no),
+            Self::ColumnCreate(r) => write_rec(w, r, seq_no),
+            Self::ColumnAlter(r) => write_rec(w, r, seq_no),
+            Self::ColumnDrop(r) => write_rec(w, r, seq_no),
+            Self::RowInsert(r) => write_rec(w, r, seq_no),
+            Self::RowUpdate(r) => write_rec(w, r, seq_no),
+            Self::RowDelete(r) => write_rec(w, r, seq_no),
+        }
+    }
 }
 
 trait Recordable: Sized {
